@@ -33,6 +33,7 @@ struct patch_target_t {
     uint64_t address;
     uint8_t length;
     ZydisRegister reg;
+    ZydisMnemonic mnemonic;
 };
 
 std::optional<image_layout_t> parse_image(std::span<const uint8_t> image) {
@@ -154,10 +155,11 @@ std::vector<std::optional<patch_target_t>> find_xrefs(const image_layout_t& imag
             matches.push_back(last_test);
         }
 
-        if (instruction.mnemonic == ZYDIS_MNEMONIC_TEST) {
+        if (instruction.mnemonic == ZYDIS_MNEMONIC_TEST || instruction.mnemonic == ZYDIS_MNEMONIC_CMP) {
             last_test.reset();
             if (instruction.operand_count_visible > 0 && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-                last_test = patch_target_t{section.offset + offset, address, instruction.length, operands[0].reg.value};
+                last_test = patch_target_t{section.offset + offset, address, instruction.length,
+                    operands[0].reg.value, instruction.mnemonic};
             }
         }
 
@@ -244,9 +246,15 @@ int main() {
 
     const auto xrefs = find_xrefs(*image, strings.front());
     if (xrefs.size() != 1 || !xrefs.front()) {
-        std::println("[-] expected one xref with a preceding register test");
+        std::println("[-] expected one xref with a preceding register test or cmp");
         getchar();
         return 1;
+    }
+
+    if (xrefs.front()->mnemonic == ZYDIS_MNEMONIC_CMP) {
+        std::println("[+] already patched; no changes needed");
+        getchar();
+        return 0;
     }
 
     std::error_code error;
@@ -336,20 +344,40 @@ int main() {
         return 1;
     }
 
-    std::ofstream config(config_path, std::ios::app);
-    if (!config) {
+    std::ifstream input(config_path);
+    if (!input) {
         std::println("[-] unable to open serverDZ.cfg");
         getchar();
         return 1;
     }
-    config << "\ndisableVAC = 1;             // Allows players to connect with vac/game bans\n";
-    config.close();
-    if (!config) {
-        std::println("[-] unable to write serverDZ.cfg; restore it from serverDZ.bak");
-        getchar();
-        return 1;
+
+    std::string contents((std::istreambuf_iterator<char>(input)),
+        std::istreambuf_iterator<char>());
+
+    input.close();
+
+    if (contents.find("disableVAC") != std::string::npos) {
+        std::println("[+] No updates needed for serverDZ.cfg");
     }
-    std::println("[+] updated serverDZ.cfg");
+    else {
+        std::ofstream config(config_path, std::ios::app);
+        if (!config) {
+            std::println("[-] unable to open serverDZ.cfg");
+            getchar();
+            return 1;
+        }
+
+        config << "\ndisableVAC = 1;             // Allows players to connect with vac/game bans\n";
+        config.close();
+
+        if (!config) {
+            std::println("[-] unable to write serverDZ.cfg; restore it from serverDZ.bak");
+            getchar();
+            return 1;
+        }
+
+        std::println("[+] updated serverDZ.cfg");
+    }
 
     return 0;
 }
